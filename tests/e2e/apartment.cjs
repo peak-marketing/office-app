@@ -1,0 +1,103 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+// Default: search/selection/ownership and real public image preview. LIVE_APARTMENT=1 also downloads the actual KB drawing.
+// Neither mode calls OpenAI; the reviewed 112A reference is identified explicitly as a manual trace.
+const {suite}=require('./lib/harness.cjs');
+const t=suite(process.env.LIVE_APARTMENT==='1'?'apartment-live':'apartment');
+const num=q=>Number(t.sql(q));
+const house=pid=>JSON.parse(t.sql(`select house from versions where id=(select current_version_id from projects where id=${pid})`));
+async function choose(c){
+  await c.goto(t.B+'/spaces/address');await c.fill('[data-testid=plan-q]','갈매스타힐스');await c.click('[data-testid=plan-search]');await c.click('[data-testid=complex-pick]');
+}
+t.run(async()=>{
+  const c=await t.page();await t.login(c,'customer@demo.kr');
+  await choose(c);
+  t.check('단지 이름과 실제 공개 주소 확인', (await c.locator('[data-testid=plan-complex]').textContent()).includes('산마루로 46'));
+  t.check('7타입을 서로 다른 선택지로 표시',await c.locator('[data-testid^=source-galmae]').count()===7);
+  await c.selectOption('[data-testid=plan-size]','34');
+  t.check('34평 공급면적 필터는 112 세 타입',await c.locator('[data-testid^=source-galmae]').count()===3);
+  await c.click('[data-testid=source-galmae-112A]');await c.waitForFunction(()=>document.querySelector('[data-testid=source-preview] img')?.naturalWidth>0);await c.check('[data-testid=source-confirm]');
+  await c.click('[data-testid=source-galmae-112B]');
+  t.check('타입 변경 후 우리 집 확인을 다시 받음',!await c.locator('[data-testid=source-confirm]').isChecked());
+  await c.selectOption('[data-testid=plan-variant]','expanded');
+  t.check('기본형 도면을 확장형으로 사용하지 않음',await c.locator('[data-testid=source-start]').count()===0 && await c.locator('[data-testid=source-expansion-missing] a').getAttribute('href')==='/spaces/recognize');
+  await c.selectOption('[data-testid=plan-variant]','basic');await c.click('[data-testid=source-galmae-112A]');
+  await c.waitForFunction(()=>document.querySelector('[data-testid=source-preview] img')?.naturalWidth>0);
+  t.check('선택 전에 원본 도면 그림을 실제로 표시',await c.locator('[data-testid=source-preview] img').evaluate(x=>x.naturalWidth===923));
+  await c.fill('[data-testid=plan-dong]','499');await c.fill('[data-testid=plan-ho]','9876');await c.check('[data-testid=source-confirm]');await t.shot(c,'01-source-confirm');
+  await c.click('[data-testid=source-start]');await c.waitForURL(/spaces\/recognize\?selection=/);
+  const url=c.url(),sid=new URL(url).searchParams.get('selection');
+  t.check('동호는 URL에 노출하지 않고 소유자 선택 기록으로 전달',!url.includes('9876')&&!url.includes('499')&&t.sql(`select dong||':'||ho from floorplan_selections where id='${sid}'`)==='499:9876');
+  t.check('공개 원본과 대조한 참고 배치임을 표시',await c.locator('[data-testid=reference-method]').count()===1 && (await c.locator('[data-testid=selected-source]').textContent()).includes('112A'));
+  t.check('참고 배치는 API 키가 없어도 작동하고 OpenAI 동의를 요구하지 않음',await c.locator('[data-testid=ai-analyze]').isEnabled()&&await c.locator('[data-testid=ai-consent]').count()===0);
+  const guest=await t.page();
+  t.check('원본 미리보기 프록시에서 비로그인·임의 ID 차단',(await guest.request.get(t.B+'/api/floorplans/source/galmae-112A')).status()===404&&(await c.request.get(t.B+'/api/floorplans/source/http://127.0.0.1')).status()===404);
+  await guest.goto(url);
+  t.check('비로그인 선택 기록은 로그인 화면으로 보호',new URL(guest.url()).pathname==='/login');
+  const uid=num("select id from users where email='customer@demo.kr'");
+  t.sql("insert into users(role,email,password_hash,name) select 'customer','other-apt@test.kr',password_hash,'다른 테스트 고객' from users where id="+uid);
+  const other=await t.page();await t.login(other,'other-apt@test.kr');
+  t.check('다른 고객이 선택 기록 URL을 열면 404',(await other.goto(url)).status()===404);
+  const beforeCreate=num(`select count(*) from projects where customer_id=${uid}`);
+  if(process.env.LIVE_APARTMENT==='1'){
+    await c.click('[data-testid=ai-analyze]');await c.waitForSelector('[data-testid=recognition-review]',{timeout:30000});
+    t.check('실제 KB 도면을 서버에서 가져와 비공개 밑그림으로 사용',await c.locator('[data-testid=recognition-overlay] image').getAttribute('href').then(x=>x.startsWith('/files/')));
+    t.check('공개 치수와 내부 실측을 구분: 기본 가로 값 없음',await c.inputValue('[data-testid=ai-width]')===''&&await c.locator('[data-testid=ai-import]').isDisabled());
+    // Test value is explicit, NOT a claim that the source uses internal-face dimensions.
+    await c.fill('[data-testid=ai-width]','11900');await c.waitForSelector('[data-testid=house-view]');await t.shot(c,'02-original-overlay');
+    t.check('가로 확인 후 3D 참고 미리보기 생성',await c.locator('[data-testid=house-provenance]').textContent().then(s=>s.includes('참고 배치')&&!s.includes('AI 도면 인식 초안')));
+    await c.click('[data-testid=house-tab-3d]');await c.waitForSelector('[data-testid=house-3d] canvas');await t.shot(c,'03-actual-plan-3d');
+    await c.check('[data-testid=ai-confirm]');await c.click('[data-testid=ai-import]');await c.waitForURL(/projects\/\d+\/house\/edit/);
+    const pid=Number(c.url().match(/projects\/(\d+)/)[1]);
+    const h=house(pid);
+    t.check('실제 원본 기준 배치·출처·버전을 독립 저장',h.labels.filter(x=>x.kind==='bed').length===3&&h.labels.filter(x=>x.kind==='bath').length===2&&h.provenance.kind==='template'&&h.underlay.fileId>0);
+    t.check('동호는 비공개 프로젝트 주소에만 포함',t.sql(`select address from projects where id=${pid}`).includes('499동 9876호')&&!JSON.stringify(h).includes('9876'));
+    await c.click('[data-testid=mode-furniture]');await c.click('[data-testid=add-h-bed-single]');await c.click('[data-testid=editor-save]');await t.until(()=>house(pid).items.length===1);await c.reload();
+    t.check('침대 배치·저장 후 재접속으로 같은 모델 유지',house(pid).items.length===1&&house(pid).provenance.kind==='template');await t.shot(c,'04-editor-saved');
+    await c.goto(t.B+`/projects/${pid}/request`);await c.click('[data-testid=home-send]');await c.waitForURL(new RegExp(`/projects/${pid}$`));
+    const snap=JSON.parse(t.sql(`select snapshot from request_revisions where project_id=${pid} order by no desc limit 1`));
+    t.check('요청에 동일한 배치가 보관, 원본 대조 출처 유지',snap.house.items.length===1&&snap.house.provenance.kind==='template');
+    const admin=await t.page();await t.login(admin,'admin@demo.kr');
+    t.sql("update vendors set fields='office,home' where user_id=(select id from users where email='vendor1@demo.kr')");
+    const vid=num("select id from vendors where user_id=(select id from users where email='vendor1@demo.kr')");
+    await admin.goto(t.B+`/admin/projects/${pid}`);await admin.check(`input[name=vendor][value="${vid}"]`);await admin.locator('form:has(input[name=vendor]) button').click();
+    const aid=num(`select id from assignments where project_id=${pid} and vendor_id=${vid}`);
+    const v=await t.page();await t.login(v,'vendor1@demo.kr');await v.goto(t.B+`/vendor/requests/${aid}`);
+    t.check('업체가 동일한 참고 3D를 보고, 방문 전 동호는 HTML에서 비공개',await v.locator('[data-testid=house-view]').count()===1&&!(await v.content()).includes('9876호'));await t.shot(v,'05-vendor-same-plan');
+    const phone=await t.phone();await t.login(phone,'customer@demo.kr');await phone.goto(t.B+`/projects/${pid}/house/edit`);
+    t.check('390px에서 실도면 배치 편집 화면 넘침 없음',await t.noOverflow(phone));await t.shot(phone,'06-mobile-editor');
+    await c.goto(t.B+`/projects/${pid}/print`);
+    t.check('출력에도 참고 배치·실측 아님 표시',(await c.locator('[data-testid=print-house]').textContent()).includes('참고 배치'));
+    await c.goto(t.B+`/projects/${pid}/activity`);await c.getByRole('button',{name:'링크 만들기'}).click();
+    const token=await t.until(()=>t.sql(`select token from share_links where project_id=${pid} order by id desc limit 1`));
+    await guest.goto(t.B+`/share/${token}`);
+    t.check('공유 화면에는 참고 배치만 보이고 동호·원본 파일은 비공개',await guest.locator('[data-testid=house-view]').count()===1&&!(await guest.content()).includes('9876호')&&!(await guest.content()).includes(`/files/${h.underlay.fileId}`));
+    const fid=h.underlay.fileId;
+    t.check('원본 도면 파일 비로그인 다운로드 차단',(await guest.request.get(t.B+`/files/${fid}`)).status()===404);
+    await c.goto(url);t.check('사용한 선택 기록을 다시 열어도 도면 복사나 주소 자동공개 없음',num(`select count(*) from projects where customer_id=${uid}`)===beforeCreate+1);
+  }
+  const phone=await t.phone();await t.login(phone,'customer@demo.kr');await choose(phone);await phone.click('[data-testid=source-galmae-112A]');
+  await phone.waitForFunction(()=>document.querySelector('[data-testid=source-preview] img')?.naturalWidth>0);
+  t.check('390px에서 원본 도면 그림 로드',await phone.locator('[data-testid=source-preview] img').evaluate(x=>x.naturalWidth===923));
+  t.check('390px에서 단지·동호·타입·공개 도면 가로 넘침 없음',await t.noOverflow(phone));await t.shot(phone,'07-mobile-source');
+  await c.goto(t.B+'/spaces/address');await c.fill('[data-testid=plan-q]','미등록 아파트 9999');await c.click('[data-testid=plan-search]');await c.waitForSelector('[data-testid=plan-not-found]');
+  t.check('등록 도면 없음: 직접 업로드·치수 입력·자료 없는 상담 제공',await c.locator('[data-testid=plan-not-found] a').count()===3);
+  await c.locator('[data-testid=plan-not-found]').getByRole('link',{name:'치수로 공간 만들기'}).click();
+  await c.fill('[data-testid=house-w]','6400');await c.fill('[data-testid=house-d]','5100');await c.click('[data-testid=house-submit]');await c.waitForURL(/projects\/\d+\/house\/edit/);
+  const manual=Number(c.url().match(/projects\/(\d+)/)[1]);
+  t.check('도면 없는 치수 입력도 사무실 대신 집 전체 평면으로 연결',t.sql(`select kind from projects where id=${manual}`)==='home'&&house(manual).width===6.4&&house(manual).depth===5.1&&num(`select requested_version_id is null from projects where id=${manual}`)===1);
+  await c.goto(t.B+'/spaces/recognize');
+  t.check('AI 인식 불가 시 주거 도면 따라 그리기로 연결',await c.locator('[data-testid=ai-unavailable] a').getAttribute('href')==='/spaces/home?from=trace');
+  await c.locator('[data-testid=ai-unavailable] a').click();await c.waitForURL(/spaces\/home\?from=trace/);await c.waitForSelector('[data-testid=house-create]');
+  t.check('공사 신청 없이 주거 따라 그리기 화면 열림',await c.locator('[data-testid=house-create]').count()===1 && (await c.locator('main').textContent()).includes('내 집 평면'));
+  await c.setInputFiles('[data-testid=trace-file]',t.fixture('plan1.jpg'));await c.waitForSelector('[data-testid=trace-svg]');
+  const clickPx=async(u,v)=>{const xy=await c.evaluate(([u,v])=>{const svg=document.querySelector('[data-testid=trace-svg]');svg.scrollIntoView({block:'center'});const q=new DOMPoint(u,v).matrixTransform(svg.getScreenCTM());return [q.x,q.y];},[u,v]);await c.mouse.click(...xy);};
+  await clickPx(200,900);await clickPx(1400,900);await c.fill('[data-testid=trace-mm]','12000');await c.click('[data-testid=trace-scale]');
+  for(const xy of [[200,900],[1400,900],[1400,600],[1000,600],[1000,200],[200,200]])await clickPx(...xy);
+  await c.click('[data-testid=trace-close]');await c.click('[data-testid=house-submit]');await c.waitForURL(/projects\/\d+\/house\/edit/);
+  const traced=Number(c.url().match(/projects\/(\d+)/)[1]),th=house(traced);
+  t.check('새 주거 따라 그리기에서 꺾인 외곽과 비공개 원본 파일 저장',th.source==='trace'&&th.outline.length===6&&th.underlay.fileId>0&&t.sql(`select project_id||':'||category from files where id=${th.underlay.fileId}`)===`${traced}:underlay`);
+  t.check('따라 그린 원본도 다른 고객에게 공개하지 않음',(await other.request.get(t.B+`/files/${th.underlay.fileId}`)).status()===404);
+  t.sql(`update floorplan_selections set expires_at='2000-01-01' where id='${sid}'`);
+  t.check('만료된 단지 선택 기록은 열람 차단',(await c.goto(url)).status()===404);
+  t.check('외래키 무결성 유지',t.sql('pragma foreign_key_check;')==='');
+});

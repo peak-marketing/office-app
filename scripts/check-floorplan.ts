@@ -1,0 +1,91 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {parseRecognition,recognitionToHouse,type PlanRecognition} from "../lib/floorplan/geometry";
+import {recognizeImage} from "../lib/floorplan/provider";
+
+async function main(){
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"floorplan-check-"));
+  process.env.DATA_DIR=dir;process.env.SEED_DEMO="1";
+  const {db,get,run}=await import("../lib/db");
+  const {reserveRecognition,ownedJob,jobIsFresh,pngSize,searchTemplates,templateHouse}=await import("../lib/floorplan/jobs");
+  const {detectRooms}=await import("../lib/space/house-rooms");
+  const {houseErrors,rectOutline,newHouse}=await import("../lib/space/house");
+  const {composeHouse}=await import("../lib/space/house-geom");
+  let count=0;
+  const check=(s:string,f:()=>void)=>{f();console.log(`PASS ${s}`);count++;};
+  const copy=()=>structuredClone(plan);
+  const plan:PlanRecognition={isFloorplan:true,supported:true,outline:[[.1,.1],[.9,.1],[.9,.9],[.1,.9]],walls:[{a:[.5,.1],b:[.5,.9]}],openings:[{kind:"door",a:[.5,.5],b:[.5,.62]},{kind:"window",a:[.18,.1],b:[.38,.1]}],labels:[{point:[.3,.5],name:"거실",kind:"living"},{point:[.7,.5],name:"침실",kind:"bed"}],widthMm:null,dimensionEvidence:"",warnings:["도면 전체 가로 치수가 보이지 않아요."]};
+  try{
+    check("이미지 좌표만 인식하고 실제 가로 없이 생성하지 않음",()=>assert.throws(()=>recognitionToHouse(plan,1000,800,0)));
+    const h=recognitionToHouse(plan,1000,800,10000,2400,11);
+    check("가로 10,000mm 기준, 종횡비를 유지한 세로 8,000mm",()=>assert.equal(h.depth,8));
+    check("위아래 좌표 변환 및 원본 도면 좌표 행렬",()=>{assert.deepEqual(h.underlay?.m,[.0125,0,0,-.0125,-1.25,9]);assert.equal(h.underlay?.fileId,11);});
+    check("내부 벽·문·창 보존, 문을 내부 벽에 연결",()=>{assert.equal(h.walls.length,1);assert.equal(h.openings.length,2);assert.equal(h.openings[0].wall,"w1");assert.equal(h.openings[1].kind,"window");});
+    check("추가 벽·방·구조물·가구를 임의로 만들지 않음",()=>{assert.equal(h.fixed.length,0);assert.equal(h.items.length,0);assert.equal(h.labels.length,2);});
+    check("방 자동 구분 두 개와 실제 3D 장면 생성",()=>{assert.equal(detectRooms(h).regions.filter(r=>!r.sliver).length,2);assert(composeHouse(h,detectRooms(h)));assert.deepEqual(houseErrors(h),[]);});
+    check("출처·임시 두께와 문 방향 안내를 저장",()=>{assert.equal(h.provenance?.kind,"ai");assert(h.provenance?.warnings.some(x=>x.includes("두께")));});
+    check("인식 초안과 원본 비교 필요 안내를 저장",()=>{assert(h.provenance?.label.includes("초안"));assert(h.provenance?.warnings.some(x=>x.includes("위치·폭")));});
+    const wide=recognitionToHouse(plan,1000,800,20000);
+    check("치수 변경은 모든 위치·문 폭·방 면적에 같은 축척",()=>{assert.equal(wide.walls[0].a[0],2*h.walls[0].a[0]);assert.equal(wide.openings[0].width,2*h.openings[0].width);});
+    const ccw=copy();ccw.outline.reverse();
+    check("꼭짓점 순서 반대여도 문·창 같은 위치",()=>assert.deepEqual(recognitionToHouse(ccw,1000,800,10000).outline,h.outline));
+    const l=copy();l.outline=[[.1,.1],[.9,.1],[.9,.5],[.5,.5],[.5,.9],[.1,.9]];l.walls=[];l.openings=[];l.labels=[];
+    check("ㄱ자 바깥 형태를 직사각형으로 바꾸지 않음",()=>assert.equal(recognitionToHouse(l,1000,800,10000).outline.length,6));
+    const loose=copy();loose.outline=[[.1,.1],[.9,.1],[.9,.5],[.55,.5],[.55,.9],[.1,.9]];loose.walls=[{a:[.5,.1],b:[.5,.5]}];loose.openings=[];loose.labels=[{point:[.3,.3],name:"거실",kind:"living"},{point:[.7,.3],name:"침실",kind:"bed"}];
+    check("끊긴 내부 벽과 합쳐진 방 이름을 출처 안내에 남김",()=>{const warnings=recognitionToHouse(loose,1000,800,10000).provenance!.warnings;assert(warnings.some(w=>w.includes("끝이 다른 벽")));assert(warnings.some(w=>w.includes("‘침실’")&&w.includes("한 방")));});
+    const diagonal=copy();diagonal.walls[0].b=[.6,.9];
+    check("사선 내부 벽은 자동으로 꺾거나 맞추지 않고 거부",()=>assert.throws(()=>recognitionToHouse(diagonal,1000,800,10000),/직각/));
+    const orphan=copy();orphan.openings[0].a=[.3,.3];orphan.openings[0].b=[.3,.4];
+    check("벽과 떨어진 문은 다른 벽에 억지로 연결하지 않음",()=>assert.throws(()=>recognitionToHouse(orphan,1000,800,10000),/연결/));
+    const self=copy();self.outline=[[.1,.1],[.9,.9],[.9,.1],[.1,.9]];
+    check("교차·기운 윤곽 거부",()=>assert.throws(()=>recognitionToHouse(self,1000,800,10000)));
+    const outLabel=copy();outLabel.labels[0].point=[0,0];
+    check("집 밖 방 이름 거부",()=>assert.throws(()=>recognitionToHouse(outLabel,1000,800,10000),/집 밖/));
+    for(const [name,raw] of [["사진",{...plan,isFloorplan:false}],["미지원 도면",{...plan,supported:false}],["유한하지 않은 점",{...plan,outline:[[NaN,0]]}],["정규화 밖 좌표",{...plan,walls:[{a:[-1,.1],b:[.5,.9]}]}],["벽 개수 초과",{...plan,walls:Array(151).fill(plan.walls[0])}],["누락 필드",{outline:[]}]] as [string,unknown][])
+      check(`${name} 결과 거부`,()=>assert.throws(()=>parseRecognition(raw)));
+    delete process.env.OPENAI_API_KEY;
+    await assert.rejects(()=>recognizeImage(Buffer.from("x")),/연결 전/);console.log("PASS 키가 없으면 AI 가짜 결과 없이 중단");count++;
+    process.env.OPENAI_API_KEY="synthetic-only-not-a-real-key";
+    let payload = {} as {model:string;store:boolean;instructions:string;reasoning?:{effort:string};text:{format:{strict:boolean}};input:[{content:[{text:string},{image_url:string;detail:string}]}]};
+    const mock=async(_input:unknown,init?:RequestInit)=>{payload=JSON.parse(String(init?.body));return Response.json({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify(plan)}]}]});};
+    assert.deepEqual(await recognizeImage(Buffer.from("fixture"),mock as typeof fetch),plan);console.log("PASS OpenAI Responses 응답을 읽어 구조화된 결과 반환 (모의 응답)");count++;
+    check("키는 서버 헤더에만 사용하고 요청은 strict schema·store false",()=>{assert.equal(payload.store,false);assert.equal(payload.text.format.strict,true);assert(payload.input[0].content[1].image_url.startsWith("data:image/png;base64,"));assert.equal(JSON.stringify(payload).includes("synthetic-only"),false);});
+    check("공간 인식은 고정 모델·중간 추론·원본 해상도 사용",()=>{assert.equal(payload.model,"gpt-5.4-2026-03-05");assert.equal(payload.reasoning?.effort,"medium");assert.equal(payload.input[0].content[1].detail,"original");});
+    await recognizeImage(fs.readFileSync("tests/e2e/fixtures/trace-R.png"),mock as typeof fetch);
+    check("이미지 전체 픽셀 치수를 전달하고 문호·외부 벽 중복 제외 안내",()=>{assert(payload.input[0].content[0].text.includes("1200px"));assert(payload.instructions.includes("INTERNAL walls only"));assert(payload.instructions.includes("Door leaves and swing arcs"));});
+    process.env.OPENAI_FLOORPLAN_MODEL="gpt-4.1";
+    await recognizeImage(Buffer.from("fixture"),mock as typeof fetch);
+    check("이전 모델에는 지원하지 않는 추론·원본 옵션을 보내지 않음",()=>{assert.equal(payload.reasoning,undefined);assert.equal(payload.input[0].content[1].detail,"high");});
+    delete process.env.OPENAI_FLOORPLAN_MODEL;
+    for(const [name,body,status] of [["거절 응답",{status:"completed",output:[{type:"message",content:[{type:"refusal",refusal:"no"}]}]},200],["미완료 응답",{status:"incomplete",output:[]},200],["JSON 손상",{status:"completed",output:[{type:"message",content:[{type:"output_text",text:"{"}]}]},200],["API 인증 오류",{error:"sensitive info"},401],["API 제한",{},429]] as const){
+      await assert.rejects(()=>recognizeImage(Buffer.from("x"),(async()=>Response.json(body,{status})) as typeof fetch));console.log(`PASS ${name} 안전한 오류 반환`);count++;
+    }
+    await assert.rejects(()=>recognizeImage(Buffer.from("x"),(async()=>{throw new Error("timeout");}) as typeof fetch),/지연/);console.log("PASS 타임아웃·네트워크 실패 처리");count++;
+    check("PNG 헤더에서 실제 픽셀 치수를 읽음",()=>{const b=fs.readFileSync("tests/e2e/fixtures/trace-R.png");assert(pngSize(b).iw>0);});
+    check("PDF·텍스트를 PNG로 속인 파일 거부",()=>assert.throws(()=>pngSize(Buffer.from("%PDF"))));
+    const customer=get<{id:number}>("SELECT id FROM users WHERE role='customer'")!.id;
+    const admin=get<{id:number}>("SELECT id FROM users WHERE role='admin'")!.id;
+    const job=reserveRecognition(customer,null);
+    check("같은 고객 중복 분석 잠금",()=>assert.throws(()=>reserveRecognition(customer,null),/이미 읽고/));
+    check("다른 사용자 작업은 조회하지 못함",()=>assert.equal(ownedJob(job,admin),undefined));
+    check("유효기간 지난 작업 구분",()=>assert.equal(jobIsFresh({...ownedJob(job,customer)!,expires_at:"2000-01-01 00:00:00"}),false));
+    run("UPDATE floorplan_jobs SET created_at=datetime('now','-6 minutes') WHERE id=?",job);reserveRecognition(customer,null);
+    check("끊긴 분석 잠금은 5분 뒤 회복",()=>assert.equal(ownedJob(job,customer)?.status,"failed"));
+    run("UPDATE floorplan_jobs SET status='failed'");
+    for(let i=0;i<28;i++)run("INSERT INTO floorplan_jobs(owner_id,status) VALUES(?,'failed')",customer);
+    check("고객별 하루 분석 한도 30회",()=>assert.throws(()=>reserveRecognition(customer,null),/30회/));
+    const th=newHouse(rectOutline(8,6),"dims",2.4,{fileId:999,iw:100,ih:100,m:[1,0,0,1,0,0]});
+    run("INSERT INTO floorplan_templates(complex,address,unit_type,area,source_note,house,created_by) VALUES('검증 단지','가상로 1','84A',84,'사용 허가된 도면',?,?)",JSON.stringify(th),admin);
+    const template=searchTemplates("검증")[0];
+    check("주소·단지명 검색 결과 반환",()=>assert.equal(searchTemplates("가상로 1")[0].id,template.id));
+    check("와일드카드 입력은 전체 도면을 반환하지 않음",()=>assert.equal(searchTemplates("%").length,0));
+    check("등록 도면 복사에 비공개 밑그림·가구 제외",()=>{assert.equal(templateHouse(template).underlay,undefined);assert.deepEqual(templateHouse(template).items,[]);assert.equal(templateHouse(template).provenance?.kind,"template");});
+    run("UPDATE floorplan_templates SET active=0 WHERE id=?",template.id);
+    check("숨긴 등록 도면은 고객 검색에서 제외",()=>{assert.equal(searchTemplates("검증").length,0);assert.equal(searchTemplates("검증",true).length,1);});
+    check("데이터 외래 키 무결성",()=>assert.deepEqual(db().prepare("PRAGMA foreign_key_check").all(),[]));
+    console.log(`${count} passed, 0 failed (AI 응답은 모의; 실인식 정확도 별도)`);
+  } finally {delete process.env.OPENAI_API_KEY;db().close();fs.rmSync(dir,{recursive:true,force:true});}
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

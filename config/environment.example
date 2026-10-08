@@ -1,0 +1,33 @@
+# Copy to .env for Docker, or .env.local for local Next.js. Never commit real keys.
+APP_URL=http://localhost:3000
+DOMAIN=space.example.com
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=
+ADMIN_NAME=운영자
+SEED_DEMO=0
+COOKIE_SECURE=1
+# AI image/PDF floor-plan recognition (server-side only)
+OPENAI_API_KEY=
+OPENAI_FLOORPLAN_MODEL=gpt-5.4-2026-03-05
+# External services: blank means unconnected/test mode
+RESEND_API_KEY=
+MAIL_FROM=
+TOSS_CLIENT_KEY=
+TOSS_SECRET_KEY=
+JUSO_API_KEY=
+# Separate approval key for registered dong/floor/ho lookup
+JUSO_DETAIL_API_KEY=
+DATA_GO_KR_KEY=
+# Optional: official Naver web search for public apartment-plan source links
+NAVER_SEARCH_CLIENT_ID=
+NAVER_SEARCH_CLIENT_SECRET=
+# Operator information
+OPERATOR_NAME=
+OPERATOR_CEO=
+OPERATOR_BIZ_NO=
+OPERATOR_MAIL_ORDER_NO=
+OPERATOR_ADDRESS=
+OPERATOR_CS=
+OPERATOR_CONTACT=
+RESPOND_HOURS=48
+QUOTE_DAYS=7

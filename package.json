@@ -1,0 +1,56 @@
+{
+  "name": "office-matching",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "check:layouts": "tsx scripts/check-layouts.ts",
+    "check:space": "tsx scripts/check-space.ts",
+    "check:home": "tsx scripts/check-home.ts",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:report": "tsx scripts/test-report.ts",
+    "serve:start": "node scripts/serve.mjs start",
+    "serve:stop": "node scripts/serve.mjs stop",
+    "serve:restart": "node scripts/serve.mjs restart",
+    "serve:status": "node scripts/serve.mjs status",
+    "data:backup": "node scripts/data.mjs backup",
+    "data:backups": "node scripts/data.mjs list",
+    "data:verify": "node scripts/data.mjs verify",
+    "data:restore": "node scripts/data.mjs restore",
+    "data:reset": "node scripts/data.mjs reset",
+    "data:home-setup": "tsx scripts/home-setup.ts",
+    "check:commerce": "tsx scripts/check-commerce.ts",
+    "check:floorplan": "tsx scripts/check-floorplan.ts",
+    "check:floorplan-refine": "tsx scripts/check-floorplan-refine.ts",
+    "check:apartment": "tsx scripts/check-apartment.ts",
+    "check:address": "node --import tsx scripts/check-address.ts",
+    "check:building": "node --import tsx scripts/check-building.ts"
+  },
+  "dependencies": {
+    "next": "16.3.7",
+    "pdfjs-dist": "^6.3.289",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "sharp": "0.35.5",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/three": "^0.186.0",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.7",
+    "playwright-core": "^1.63.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

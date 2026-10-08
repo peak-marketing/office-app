@@ -1,0 +1,27 @@
+# 서버 한 대에 올리는 구성: 앱 + Caddy(HTTPS 인증서 자동 발급).
+#   1) config/environment.example을 .env로 복사해 값을 채운다.  2) docker compose up -d --build
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - app-data:/app/data
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - app
+volumes:
+  app-data:
+  caddy-data:

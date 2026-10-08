@@ -1,0 +1,10 @@
+node_modules
+.next
+.next-*
+.e2e-data
+.git
+coverage
+data
+*.tsbuildinfo
+.env*
+!.env.example

@@ -1,0 +1,62 @@
+// Explicit live/free JUSO browser check. B/DB/P must point to a dedicated isolated server.
+/* eslint-disable @typescript-eslint/no-require-imports -- Uses the repository's CommonJS E2E harness. */
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { suite } = require("../e2e/lib/harness.cjs");
+if (!process.env.DB || !path.resolve(process.env.DB).includes(`${path.sep}.e2e-data${path.sep}`)) throw new Error("Use an isolated .e2e-data DB");
+const t = suite("address-live", { webgl: false });
+const secrets = fs.readFileSync(path.join(t.P, ".env.local"), "utf8").split(/\r?\n/).filter((line) => /^JUSO(?:_DETAIL)?_API_KEY=/.test(line)).map((line) => line.slice(line.indexOf("=") + 1).trim().replace(/^['"]|['"]$/g, ""));
+t.run(async () => {
+  const guest = await t.page();
+  await guest.goto(t.B + "/spaces/address");
+  await guest.click("[data-testid=address-details] summary");
+  t.check("로그인 전 주소 조회 입력을 노출하지 않음", await guest.locator("[data-testid=addr-q]").count() === 0);
+  for (const mobile of [false, true]) {
+    const p = mobile ? await t.phone() : await t.page();
+    let browserProviderCalls = 0;
+    let leaked = false;
+    p.on("request", (r) => { if (r.url().includes("business.juso.go.kr")) browserProviderCalls++; if (secrets.some((s) => r.url().includes(s))) leaked = true; });
+    await t.login(p, "customer@demo.kr");
+    await p.goto(t.B + "/spaces/address");
+    await p.click("[data-testid=address-details] summary");
+    await p.fill("[data-testid=addr-q]", "구리시 산마루로 46");
+    await p.click("[data-testid=addr-search]");
+    await p.locator("[data-testid=addr-hits] button").first().waitFor();
+    t.check(`${mobile ? "휴대폰" : "PC"} 실제 아파트 주소 반환`, (await p.textContent("[data-testid=addr-hits]")).includes("갈매스타힐스") && await p.locator("[data-testid=addr-example]").count() === 0);
+    await p.locator("[data-testid=addr-hits] button").first().click();
+    await p.locator("[data-testid=addr-dong] option[value='401동']").waitFor({ state: "attached" });
+    const dongOptions = await p.locator("[data-testid=addr-dong] option").allTextContents();
+    t.check(`${mobile ? "휴대폰" : "PC"} API 동 목록 선택 가능`, dongOptions.includes("401동") && dongOptions.includes("412동"));
+    await p.selectOption("[data-testid=addr-dong]", "401동");
+    await p.locator("[data-testid=addr-floor] option[value='1층']").waitFor({ state: "attached" });
+    await p.selectOption("[data-testid=addr-floor]", "1층");
+    await p.selectOption("[data-testid=addr-ho]", "102호");
+    t.check(`${mobile ? "휴대폰" : "PC"} 층별 호 선택 가능`, await p.inputValue("[data-testid=addr-ho]") === "102호");
+    t.check(`${mobile ? "휴대폰" : "PC"} 다른 층 호를 현재 층에 표시하지 않음`, !(await p.locator("[data-testid=addr-ho] option").allTextContents()).includes("2703호"));
+    await p.click("[data-testid=addr-building]");
+    await p.getByRole("alert").filter({ hasText: "건축물대장 조회가 아직 연결되지 않아" }).waitFor();
+    t.check(`${mobile ? "휴대폰" : "PC"} 실제 건물에 예시 면적을 채우지 않음`, await p.locator("[data-testid=addr-info]").count() === 0);
+    t.check(`${mobile ? "휴대폰" : "PC"} 모바일 가로 넘침 없음`, await t.noOverflow(p));
+    await t.shot(p, mobile ? "02-mobile-dong-floor-ho" : "01-desktop-dong-floor-ho");
+    await p.selectOption("[data-testid=addr-dong]", "402동");
+    await p.locator("[data-testid=addr-floor] option[value='2층']").waitFor({ state: "attached" });
+    t.check(`${mobile ? "휴대폰" : "PC"} 동 변경 시 이전 호와 건물 결과 초기화`, await p.inputValue("[data-testid=addr-ho]") === "" && await p.locator("[data-testid=addr-info]").count() === 0);
+    await p.click("[data-testid=addr-manual]");
+    await p.fill("[data-testid=addr-dong-manual]", "목록없는동");
+    await p.fill("input[data-testid=addr-ho]", "401");
+    t.check(`${mobile ? "휴대폰" : "PC"} 목록에 없는 동·호 직접 입력 가능`, await p.inputValue("input[data-testid=addr-ho]") === "401");
+    t.check(`${mobile ? "휴대폰" : "PC"} 업로드·치수 경로 유지`, await p.locator('[data-testid=addr-pick] a[href="/spaces/new"]').count() === 1);
+    const html = await p.content();
+    t.check(`${mobile ? "휴대폰" : "PC"} 승인키는 서버에서만 사용`, browserProviderCalls === 0 && !leaked && !secrets.some((s) => html.includes(s)));
+    await p.getByRole("button", { name: "다른 주소", exact: true }).click();
+    await p.fill("[data-testid=addr-q]", "존재하지않는건물검증용984613");
+    await p.click("[data-testid=addr-search]");
+    await p.getByText("찾은 주소가 없어요.", { exact: true }).waitFor();
+    t.check(`${mobile ? "휴대폰" : "PC"} 검색 0건을 예시로 대체하지 않음`, await p.locator("[data-testid=addr-pick]").count() === 0 && await p.locator("[data-testid=addr-example]").count() === 0);
+    await p.context().close();
+  }
+  const logs = t.sql("select query||' '||result from ext_lookups where kind='juso-detail'");
+  t.check("조회 로그에 고객이 선택한 동·호 및 키가 없음", !logs.includes("401동") && !logs.includes("102호") && !secrets.some((s) => logs.includes(s)));
+  assert.equal(t.errors.length, 0);
+});

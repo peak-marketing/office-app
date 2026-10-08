@@ -1,0 +1,65 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import sharp from "sharp";
+import {findComplexes,planSource} from "../lib/floorplan/catalog";
+import {sourceImage,verifyReferenceImage} from "../lib/floorplan/source-image";
+import {referenceRecognition,sourceHouse} from "../lib/floorplan/reference";
+import {detectRooms,regionAt} from "../lib/space/house-rooms";
+import {houseErrors} from "../lib/space/house";
+
+async function main(){
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"apartment-check-"));
+  process.env.DATA_DIR=dir;process.env.SEED_DEMO="1";
+  const {db,get,run}=await import("../lib/db");
+  const {ownedSelection,reserveRecognition,ownedJob}=await import("../lib/floorplan/jobs");
+  const {searchPlanWeb,findPlans}=await import("../lib/floorplan/search");
+  let n=0;
+  const check=(name:string,fn:()=>void)=>{fn();console.log(`PASS ${name}`);n++;};
+  const rejects=async(name:string,fn:()=>Promise<unknown>,re?:RegExp)=>{if(re)await assert.rejects(fn,re);else await assert.rejects(fn);console.log(`PASS ${name}`);n++;};
+  try{
+    check("단지 이름·공개 도로명·지번으로 같은 단지 검색",()=>{for(const q of ["갈매스타힐스","산마루로 46","갈매동 651"])assert.equal(findComplexes(q)[0].name,"갈매스타힐스(갈매4단지)");});
+    check("없는 단지를 갈매 도면으로 대체하지 않음",()=>assert.equal(findComplexes("미등록 아파트 9999").length,0));
+    check("공개 7타입과 공급/전용면적 구분",()=>{assert.equal(findComplexes("갈매스타힐스")[0].plans.length,7);assert.equal(planSource("galmae-112A")!.exclusiveArea,84.95);assert.equal(planSource("galmae-112B")!.exclusiveArea,null);});
+    const r=referenceRecognition("galmae-112A")!;
+    const h=sourceHouse(r,923,676,11900,2400,0,"galmae-112A"),d=detectRooms(h);
+    check("실제 기본형 참고 구조: 독립 침실 3·욕실 2, 라벨 분실/중복 없음",()=>{assert.equal(d.regions.filter(x=>x.kind==="bed").length,3);assert.equal(d.regions.filter(x=>x.kind==="bath").length,2);assert.equal(d.dupLabels.length,0);assert.equal(d.lostLabels.length,0);});
+    check("거실과 주방은 원본처럼 연결, 침실과는 구분",()=>{const m=h.underlay!.m;const at=(x:number,y:number)=>regionAt(d.raster,m[0]*x+m[4],m[3]*y+m[5]);assert.equal(at(475,467),at(477,248));assert.notEqual(at(475,467),at(350,264));});
+    check("전체 평면에 구조 오류 없음, 넓은 발코니 미닫이를 수용",()=>{assert.deepEqual(houseErrors(h),[]);assert(h.openings.some(o=>o.kind==="sliding"&&o.width>3));});
+    check("공개 치수 합계를 내부 실측으로 자동 적용하지 않음",()=>{assert.equal(r.widthMm,null);assert.throws(()=>sourceHouse(r,923,676,0));assert.equal(h.provenance!.kind,"template");assert(h.provenance!.warnings.some(w=>w.includes("AI 자동 인식 성공 결과가 아니")));});
+    check("다른 타입에 112A 구조를 복제하지 않음",()=>assert.equal(referenceRecognition("galmae-112B"),null));
+    const customer=get<{id:number}>("SELECT id FROM users WHERE role='customer'")!.id;
+    const admin=get<{id:number}>("SELECT id FROM users WHERE role='admin'")!.id;
+    run("INSERT INTO floorplan_selections(id,owner_id,source_id,dong,ho) VALUES('test',?,'galmae-112A','406','1203')",customer);
+    check("동·호 선택 기록은 소유 고객만 조회",()=>{assert.equal(ownedSelection("test",customer)!.ho,"1203");assert.equal(ownedSelection("test",admin),undefined);});
+    run("UPDATE floorplan_selections SET expires_at='2000-01-01' WHERE id='test'");
+    check("만료된 단지 선택 기록은 재사용하지 않음",()=>assert.equal(ownedSelection("test",customer),undefined));
+    const job=reserveRecognition(customer,null);run("UPDATE floorplan_jobs SET created_at=datetime('now','-4 minutes') WHERE id=?",job);
+    check("4분짜리 진행 중 API를 만료로 처리하지 않음",()=>{assert.throws(()=>reserveRecognition(customer,null),/이미 읽고/);assert.equal(ownedJob(job,customer)!.status,"processing");});
+    run("UPDATE floorplan_jobs SET created_at=datetime('now','-6 minutes') WHERE id=?",job);
+    check("끊긴 5분 초과 작업만 실패로 정리",()=>{reserveRecognition(customer,null);assert.equal(ownedJob(job,customer)!.status,"failed");});
+    delete process.env.NAVER_SEARCH_CLIENT_ID;delete process.env.NAVER_SEARCH_CLIENT_SECRET;
+    assert.equal((await searchPlanWeb("갈매스타힐스")).connected,false);console.log("PASS 네이버 키 없음: 임의 검색 결과 없이 등록 자료 사용");n++;
+    assert.equal((await findPlans("갈매스타힐스")).complexes.length,1);console.log("PASS API 키 없이 공개 등록 자료 검색 연결");n++;
+    process.env.NAVER_SEARCH_CLIENT_ID="test-client";process.env.NAVER_SEARCH_CLIENT_SECRET="test-secret";
+    let sent="";let headers:RequestInit["headers"];
+    const web=await searchPlanWeb("갈매스타힐스 406동1203호",(async(url,init)=>{sent=String(url);headers=init?.headers;return Response.json({items:[{title:"<b>갈매</b> 도면",link:"https://www.kbland.kr/se/c/29883",description:"<b>기본형</b>"},{title:"bad",link:"javascript:alert(1)"},{title:"bad",link:"https://127.0.0.1/private"}]});}) as typeof fetch);
+    check("공식 검색 엔드포인트·서버 인증 헤더·동호 제거",()=>{assert(sent.startsWith("https://openapi.naver.com/v1/search/webkr.json?"));assert(!decodeURIComponent(sent).includes("1203"));assert(!decodeURIComponent(sent).includes("406동"));assert.equal((headers as Record<string,string>)["X-Naver-Client-Secret"],"test-secret");assert(!sent.includes("test-secret"));});
+    check("검색 HTML·실행 URL·사설 주소를 화면에서 제외",()=>{assert.equal(web.items.length,1);assert.equal(web.items[0].title,"갈매 도면");assert(!JSON.stringify(web).includes("test-secret"));});
+    const denied=await searchPlanWeb("갈매",(async()=>Response.json({secret:"not for display"},{status:401})) as typeof fetch);
+    check("검색 실패 시 업로드 안내, 응답/인증정보 노출 없음",()=>{assert(denied.error?.includes("직접 올려"));assert(!JSON.stringify(denied).includes("not for display"));});
+    let called=false;
+    await rejects("임의 URL은 원본 도면 가져오기에서 거부",()=>sourceImage("https://127.0.0.1",(async()=>{called=true;return new Response();}) as typeof fetch));assert.equal(called,false);
+    await rejects("HTML 응답은 이미지로 읽지 않음",()=>sourceImage("galmae-112A",(async()=>new Response("<html>",{headers:{"content-type":"text/html"}})) as typeof fetch));
+    await rejects("8MB 초과 Content-Length 거부",()=>sourceImage("galmae-112A",(async()=>new Response("x",{headers:{"content-type":"image/png","content-length":"9000000"}})) as typeof fetch));
+    const png=await sharp({create:{width:60,height:40,channels:3,background:"white"}}).png().toBuffer();
+    await rejects("같은 URL의 이미지가 바뀌면 기존 참고 좌표를 적용하지 않음",()=>verifyReferenceImage("galmae-112A",png),/바뀌어/);
+    let redirect="";
+    const result=await sourceImage("galmae-112A",(async(_url,init)=>{redirect=String(init?.redirect);return new Response(png,{headers:{"content-type":"image/png"}});}) as typeof fetch);
+    check("서버 다운로드는 리다이렉트 차단·PNG 표준화",()=>{assert.equal(redirect,"error");assert.equal(result.readUInt32BE(16),60);});
+    check("마이그레이션 후 외래키 무결성 유지",()=>assert.deepEqual(db().prepare("PRAGMA foreign_key_check").all(),[]));
+    console.log(`${n} passed, 0 failed (참고 구조·권한·검색 API 모의 검사; AI 정확도 검사는 아님)`);
+  }finally{delete process.env.NAVER_SEARCH_CLIENT_ID;delete process.env.NAVER_SEARCH_CLIENT_SECRET;db().close();fs.rmSync(dir,{recursive:true,force:true});}
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});
