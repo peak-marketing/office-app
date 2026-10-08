@@ -4,6 +4,9 @@ node_modules
 .e2e-data
 .git
 coverage
+reference
+tools/legacy-validation
+docs/verification
 data
 *.tsbuildinfo
 .env*

@@ -55,3 +55,15 @@ next-env.d.ts
 
 # Address integration test/preview build
 /.next-address/
+
+# Other local builds and private runtime databases
+/.next-*/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.bundle
+__pycache__/
+*.pyc
+/tools/legacy-validation/shots/

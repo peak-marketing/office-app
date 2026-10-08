@@ -1,0 +1,59 @@
+PASS signup requires consent
+PASS intake: must pick a mode
+PASS photos: no dimension fields
+PASS photos: preview says no layout
+PASS photos: work scope required
+PASS photos: at least one photo required
+PASS photos: saved without dims and without layout
+PASS photos: no 3D on project
+PASS photos: request recorded as revision r1
+PASS admin list: photo consult flagged, real view excludes demo
+PASS admin test view shows demo project
+PASS admin: intake section shows mode and no layout
+PASS info request emailed to customer
+PASS customer sees info request banner
+PASS answer recorded and admin notified by email
+PASS after dims added: new version with real room + layout
+PASS dims: old request wizard points to space builder
+PASS dims: wizard does not continue with dims
+PASS space: real room + layout ok + drawing stored
+PASS none: saved as draft without layout
+PASS drawing: file required
+PASS drawing without dims: no layout, reason explains
+PASS r1 snapshot holds natural case + photo
+PASS admin emailed on new request
+PASS vendors emailed on assignment
+PASS assignment has 48h response deadline
+PASS vendor sees deadline
+PASS customer emailed on quote arrival
+PASS quote pinned to r1
+PASS deleted photo kept on disk for sent request
+PASS customer sees unsent changes
+PASS before sending: vendor still sees r1 content
+PASS r2 recorded with changes
+PASS assigned vendors emailed about change
+PASS vendor sees r2 with change list
+PASS vendor told quote is on old request
+PASS vendor can still open r1: natural case and old budget
+PASS files from r1 still readable by vendor
+PASS customer compare: default = latest r2, vendors reconfirming; r1 kept separate
+PASS customer compare: r1 opened separately, shown as r1 basis
+PASS vendor keeps quote → pinned to r2 with history
+PASS customer compare now on r2
+PASS customer sees sent history
+PASS admin late list shows unresponsive vendor
+PASS reminder emailed
+PASS withdrawn vendor sees notice, no details
+PASS withdrawn vendor loses file access
+PASS withdrawn vendor emailed
+PASS reassigned vendor emailed
+PASS customer counts exclude withdrawn
+PASS test-marked project leaves real view
+PASS email log page lists messages
+PASS reset: same answer for unknown email, no mail
+PASS login with new password
+PASS reset link single-use
+PASS 페이지 오류 없음
+PASS 서버 로그 오류 없음
+
+57 passed, 0 failed

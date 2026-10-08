@@ -3,7 +3,7 @@
 실제 3100 서버·데이터에는 절대 돌리지 않는다. 실행기가 묶음마다 새 데이터 폴더(`.e2e-data/data-<묶음>`)와 격리 서버(기본 3301)를 띄운다.
 
 ```sh
-npm run test:e2e                  # tests/e2e/*.cjs 전부(17묶음, 약 10분)
+npm run test:e2e                  # tests/e2e/*.cjs 전부(현재 19묶음, 실행 시간은 환경에 따라 다름)
 npm run test:e2e -- home shop     # 이름에 맞는 묶음만(예: -- office 는 사무실 묶음 전부)
 E2E_BUILD=1 npm run test:e2e      # 코드를 바꿨으면 검사용 빌드(.next-test)를 새로 만든다
 E2E_PORT=3302 npm run test:e2e    # 포트 바꾸기
